@@ -6,6 +6,8 @@ local sliders = {}
 local cState = {
 	maxBudget = EPS.GetBudget and EPS.GetBudget() or (EPS.Config and EPS.Config.MaxBudget) or 0,
 	subs = {},
+	totalAlloc = 0,
+	localBaseline = 0,
 }
 
 local COLOR_TEXT = Color(200, 200, 200)
@@ -37,6 +39,12 @@ local function calculateSum()
 	return sum
 end
 
+local function calculateGlobalEstimate()
+	local baseline = cState.localBaseline or 0
+	local total = cState.totalAlloc or 0
+	return (total - baseline) + calculateSum()
+end
+
 local function updateDemandRow(row, data)
 	if not row or not IsValid(row.demand) then return end
 
@@ -53,9 +61,9 @@ end
 local function refreshTotals()
 	if not IsValid(totalLbl) then return end
 
-	local sum = calculateSum()
-	local over = sum > cState.maxBudget
-	totalLbl:SetText(string.format("Budget: %d / %d%s", sum, cState.maxBudget, over and " (OVER)" or ""))
+	local globalSum = calculateGlobalEstimate()
+	local over = globalSum > cState.maxBudget
+	totalLbl:SetText(string.format("Budget: %d / %d%s", globalSum, cState.maxBudget, over and " (OVER)" or ""))
 	totalLbl:SetTextColor(over and COLOR_TEXT_OVER or COLOR_TEXT)
 end
 
@@ -120,7 +128,7 @@ local function populateRows()
 		sliders[id] = row
 
 		local minVal = sub.min or 0
-		local maxVal = sub.max or cState.maxBudget or minVal
+		local maxVal = sub.sliderMax or sub.max or cState.maxBudget or minVal
 		if maxVal < minVal then maxVal = minVal end
 
 		if slider.SetMinMax then
@@ -201,7 +209,7 @@ local function buildUI()
 	apply:SetSize(120, 30)
 	apply:SetText("Apply")
 	apply.DoClick = function()
-		local over = calculateSum() > cState.maxBudget
+		local over = calculateGlobalEstimate() > cState.maxBudget
 		if over then
 			surface.PlaySound("buttons/button10.wav")
 		else
@@ -215,6 +223,11 @@ local function buildUI()
 	revert:SetSize(120, 30)
 	revert:SetText("Revert")
 	revert.DoClick = function()
+		for _, sub in ipairs(cState.subs) do
+			if sub.serverAlloc ~= nil then
+				sub.alloc = sub.serverAlloc
+			end
+		end
 		populateRows()
 	end
 
@@ -240,10 +253,13 @@ end
 net.Receive(EPS.NET.FullState, function()
 	local shouldOpen = net.ReadBool()
 	local maxBudget = net.ReadUInt(16)
+	local totalAlloc = net.ReadUInt(16)
 	local count = net.ReadUInt(8)
 
 	cState.maxBudget = maxBudget
+	cState.totalAlloc = totalAlloc
 	cState.subs = {}
+	cState.localBaseline = 0
 
 	for i = 1, count do
 		cState.subs[i] = {
@@ -251,9 +267,12 @@ net.Receive(EPS.NET.FullState, function()
 			label = net.ReadString(),
 			min = net.ReadUInt(16),
 			max = net.ReadUInt(16),
+			sliderMax = net.ReadUInt(16),
 			alloc = net.ReadUInt(16),
 			demand = net.ReadUInt(16),
 		}
+		cState.subs[i].serverAlloc = cState.subs[i].alloc
+		cState.localBaseline = cState.localBaseline + (cState.subs[i].alloc or 0)
 	end
 
 	if shouldOpen then
@@ -261,6 +280,8 @@ net.Receive(EPS.NET.FullState, function()
 	elseif IsValid(PANEL) then
 		populateRows()
 	end
+
+	refreshTotals()
 end)
 
 local commandName = EPS.Config and EPS.Config.Commands and EPS.Config.Commands.ConCommand or "eps_open"

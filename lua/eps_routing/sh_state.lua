@@ -10,11 +10,23 @@ local function clampToRange(val, minVal, maxVal)
 	return val
 end
 
+local function getSubsystemBaseMax(sub)
+ if not sub then return EPS.Config.MaxBudget or 0 end
+ return sub.max or EPS.Config.MaxBudget or 0
+end
+
+local function getSubsystemOverdrive(sub)
+ local base = getSubsystemBaseMax(sub)
+ local over = sub and sub.overdrive or base
+ if over < base then over = base end
+ return over
+end
+
 local function buildDefaultTables()
 	local allocations, demand = {}, {}
 	for _, sub in ipairs(subsystems) do
 		local minVal = sub.min or 0
-		local maxVal = sub.max
+		local maxVal = getSubsystemBaseMax(sub)
 		local default = sub.default
 		if default == nil then default = minVal end
 		local clamped = clampToRange(default, minVal, maxVal)
@@ -37,7 +49,7 @@ EPS.State.maxBudget = EPS.State.maxBudget or EPS.Config.MaxBudget or 0
 local function ensureSubsystemEntries()
 	for _, sub in ipairs(subsystems) do
 		if EPS.State.allocations[sub.id] == nil then
-			EPS.State.allocations[sub.id] = clampToRange(sub.default or sub.min or 0, sub.min, sub.max)
+			EPS.State.allocations[sub.id] = clampToRange(sub.default or sub.min or 0, sub.min, getSubsystemBaseMax(sub))
 		end
 		if EPS.State.demand[sub.id] == nil then
 			EPS.State.demand[sub.id] = EPS.State.allocations[sub.id]
@@ -52,6 +64,9 @@ function EPS.ResetState()
 	EPS.State.maxBudget = EPS.Config.MaxBudget or EPS.State.maxBudget or 0
 	EPS.State.allocations = allocations
 	EPS.State.demand = demand
+	if SERVER then
+		EPS._playerLayouts = setmetatable({}, { __mode = "k" })
+	end
 	EPS._lastAllocSnapshot = nil
 	EPS._RunChangeHookIfNeeded()
 end
@@ -91,7 +106,17 @@ end
 function EPS.ClampAllocationForSubsystem(id, value)
 	local sub = EPS.GetSubsystem(id)
 	if not sub then return nil end
-	return clampToRange(value, sub.min, sub.max)
+	return clampToRange(value, sub.min, getSubsystemOverdrive(sub))
+end
+
+function EPS.GetSubsystemBaseMax(id)
+	local sub = EPS.GetSubsystem(id)
+	return getSubsystemBaseMax(sub)
+end
+
+function EPS.GetSubsystemOverdrive(id)
+	local sub = EPS.GetSubsystem(id)
+	return getSubsystemOverdrive(sub)
 end
 
 local function deepCopyAlloc()
@@ -123,6 +148,9 @@ function EPS._RunChangeHookIfNeeded()
 
 	if changed then
 		hook.Run("EPS_PowerChanged", table.Copy(EPS.State.allocations), EPS.State.maxBudget)
+		if SERVER and EPS._SyncPanels then
+			EPS._SyncPanels()
+		end
 		EPS._lastAllocSnapshot = deepCopyAlloc()
 	end
 end
